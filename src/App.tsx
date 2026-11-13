@@ -1,0 +1,9 @@
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import AppLayout from './components/layout/AppLayout';
+import { Login, Signup, ForgotPassword, PreviewAccess } from './pages/auth/AuthPages';
+import Dashboard from './pages/Dashboard';
+import { AITutor, StudyTogether, SyllabusNavigator, ReverseLecture, Leaderboard, LearningHistory, Profile, Settings } from './pages/FeaturePages';
+function ProtectedRoute(){const {session,preview,loading}=useAuth();const location=useLocation();if(loading)return <div className="auth-loading"><span className="spinner"/> Checking your learning space...</div>;if(!session&&!preview)return <Navigate to="/login" replace state={{from:location.pathname}}/>;return <AppLayout/>;}
+function AuthRoutes(){const {session,preview}=useAuth();const home=session||preview?'/dashboard':'/login';return <Routes><Route path="/" element={<Navigate to={home} replace/>}/><Route path="/login" element={session||preview?<Navigate to="/dashboard" replace/>:<Login/>}/><Route path="/signup" element={<Signup/>}/><Route path="/forgot-password" element={<ForgotPassword/>}/><Route path="/preview" element={session||preview?<Navigate to="/dashboard" replace/>:<PreviewAccess/>}/><Route element={<ProtectedRoute/>}><Route path="/dashboard" element={<Dashboard/>}/><Route path="/ai-tutor" element={<AITutor/>}/><Route path="/study-together" element={<StudyTogether/>}/><Route path="/syllabus-navigator" element={<SyllabusNavigator/>}/><Route path="/reverse-lecture" element={<ReverseLecture/>}/><Route path="/leaderboard" element={<Leaderboard/>}/><Route path="/history" element={<LearningHistory/>}/><Route path="/profile" element={<Profile/>}/><Route path="/settings" element={<Settings/>}/></Route><Route path="*" element={<Navigate to={home} replace/>}/></Routes>;}
+export default function App(){return <AuthProvider><AuthRoutes/></AuthProvider>;}
