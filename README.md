@@ -26,6 +26,16 @@ Open the local URL printed by Vite. Build the production bundle with `npm run bu
 
 With no credentials, Login displays development preview mode; the user explicitly chooses the preview route, which only opens sample data for the current browser session. Sign-up and password recovery report that Supabase is required and never claim an account was created. Supabase sign-up includes the full name in auth user metadata as a profile foundation; create a `profiles` table and secure it with row-level security when persistence is implemented.
 
+## AI Learning Assistant
+
+1. Copy `backend/.env.example` to `backend/.env`. Locally, the API reads the existing Supabase public URL and anon key from the root `.env.local`; for a separate backend deployment, set `SUPABASE_URL` and `SUPABASE_ANON_KEY` in its environment.
+2. Set either `GEMINI_API_KEY` (default provider) or `GROQ_API_KEY` and select it with `AI_PROVIDER=gemini` or `AI_PROVIDER=groq`. Provider keys stay in `backend/.env` and are never sent to the browser.
+3. Apply `supabase/migrations/20261114000000_ai_learning.sql` in the Supabase SQL editor.
+4. Install and run the API with `python -m pip install -r backend/requirements.txt` and `python -m uvicorn backend.main:app --reload`.
+5. Start the Vite app as usual. The assistant stores chats and lecture sessions under each signed-in user and relies on the migration's RLS policies.
+
+The YouTube player embeds public videos. YouTube's captions download API requires an authorized account with permission to edit the video, so public lecture captions cannot be fetched by this app without that authorization. Paste the lecture transcript into the assistant to generate transcript-grounded materials; timestamps are linked only when present in the supplied transcript.
+
 ## Routes
 
 Public: `/login`, `/signup`, `/forgot-password`, `/preview`. `/` routes to the dashboard for an authenticated or preview session and otherwise to login.
