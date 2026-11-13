@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Brain, BookOpen, Check, ChevronRight, Copy, LoaderCircle, MessageCircle, Play, Plus, Send, Sparkles, Video } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../services/supabase';
 import { askAssistant, getAssistantError, type AssistantMessage, type AssistantMode } from '../services/ai';
 import { extractYouTubeId, loadYouTubePlayerApi, type YouTubePlayer } from '../services/youtube';
+import { recordLearningEvent } from '../services/progress';
 import { Button, Card, Input, PageHeader } from '../components/common/UI';
 
 type Conversation = { id: string; title: string; updated_at: string };
@@ -47,15 +49,27 @@ function YouTubePlayerFrame({ videoId }: { videoId: string }) {
 
 function Quiz({ questions, messageId }: { questions: QuizQuestion[]; messageId: string }) {
   const [answers, setAnswers] = useState<Record<number, number>>({});
+  const [progressNotice, setProgressNotice] = useState('');
   const done = Object.keys(answers).length === questions.length;
   const score = questions.reduce((total, question, index) => total + (answers[index] === question.answer ? 1 : 0), 0);
+  function answer(index: number, option: number) {
+    if (answers[index] !== undefined) return;
+    const next = { ...answers, [index]: option };
+    setAnswers(next);
+    if (Object.keys(next).length === questions.length) {
+      const correct = questions.reduce((total, question, questionIndex) => total + (next[questionIndex] === question.answer ? 1 : 0), 0);
+      void recordLearningEvent({ event_type: 'quiz_completed', title: 'Completed practice quiz', detail: `${correct}/${questions.length} correct`, subject: null, duration_seconds: 0, idempotency_key: `quiz:${messageId}`, metadata: {} })
+        .then(() => setProgressNotice('Progress saved · +50 XP'))
+        .catch(() => setProgressNotice('Quiz completed. Sign in and apply the learning progress migration to save XP.'));
+    }
+  }
   return <div className="ai-quiz" data-quiz={messageId}>
     {questions.map((question, index) => <div className="ai-quiz-question" key={`${messageId}-${index}`}>
       <b>{index + 1}. {question.question}</b>
-      {question.options.map((option, optionIndex) => <button key={optionIndex} disabled={answers[index] !== undefined} className={answers[index] === optionIndex ? (optionIndex === question.answer ? 'correct' : 'incorrect') : answers[index] !== undefined && optionIndex === question.answer ? 'correct' : ''} onClick={() => setAnswers(current => ({ ...current, [index]: optionIndex }))}>{option}</button>)}
+      {question.options.map((option, optionIndex) => <button key={optionIndex} disabled={answers[index] !== undefined} className={answers[index] === optionIndex ? (optionIndex === question.answer ? 'correct' : 'incorrect') : answers[index] !== undefined && optionIndex === question.answer ? 'correct' : ''} onClick={() => answer(index, optionIndex)}>{option}</button>)}
       {answers[index] !== undefined && <small>{answers[index] === question.answer ? 'Correct. ' : 'Not quite. '}{question.explanation}</small>}
     </div>)}
-    {done && <strong className="ai-quiz-score">Score: {score}/{questions.length}</strong>}
+    {done && <><strong className="ai-quiz-score">Score: {score}/{questions.length}</strong>{progressNotice && <small role="status">{progressNotice}</small>}</>}
   </div>;
 }
 
@@ -83,12 +97,13 @@ function LectureResult({ materials, videoId }: { materials: LectureMaterials; vi
     {materials.topics?.length > 0 && <><h3>Key topics</h3><ul>{materials.topics.map((topic, index) => { const seconds = topic.timestamp?.split(':').reduce((total, part) => total * 60 + Number(part), 0); return <li key={`${topic.name}-${index}`}>{seconds !== undefined && Number.isFinite(seconds) ? <a href={`https://www.youtube.com/watch?v=${videoId}&t=${seconds}s`} target="_blank" rel="noreferrer">{topic.timestamp}</a> : null} {topic.name}</li>; })}</ul></>}
     <details><summary>Revision notes</summary><p>{materials.notes}</p></details>
     {materials.flashcards?.length > 0 && <><h3>Flashcards</h3><div className="ai-flashcards">{materials.flashcards.map((card, index) => <details key={index}><summary>{card.question}</summary><p>{card.answer}</p></details>)}</div></>}
-    {materials.quiz?.questions?.length > 0 && <><h3>Practice quiz</h3><Quiz questions={materials.quiz.questions} messageId="lecture-quiz"/></>}
+    {materials.quiz?.questions?.length > 0 && <><h3>Practice quiz</h3><Quiz questions={materials.quiz.questions} messageId={`lecture-quiz-${videoId}`}/></>}
   </div>;
 }
 
 export function AITutor() {
   const { session } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
   const userId = session?.user.id;
   const [prompt, setPrompt] = useState('');
   const [messages, setMessages] = useState<SavedMessage[]>([]);
@@ -105,6 +120,11 @@ export function AITutor() {
   const [lectureError, setLectureError] = useState('');
   const [lectureMaterials, setLectureMaterials] = useState<LectureMaterials | null>(null);
   const [lectureSessions, setLectureSessions] = useState<LectureSession[]>([]);
+
+  useEffect(() => {
+    const searchPrompt = searchParams.get('prompt');
+    if (searchPrompt) { setPrompt(searchPrompt); setSearchParams({}, { replace: true }); }
+  }, [searchParams, setSearchParams]);
 
   async function loadHistory() {
     if (!supabase || !userId) return;
@@ -128,7 +148,7 @@ export function AITutor() {
     setMessages((data || []) as SavedMessage[]);
   }
 
-  function newConversation() { setConversationId(null); setMessages([]); setPrompt(''); setError(''); setPendingTool(null); setToolTopic(''); setLectureMaterials(null); }
+  function newConversation() { setConversationId(null); setMessages([]); setPrompt(''); setError(''); setPendingTool(null); setToolTopic(''); setLectureMaterials(null); setLectureUrl(''); setVideoId(''); setTranscript(''); setLectureError(''); }
 
   async function saveMessage(id: string, role: AssistantMessage['role'], content: string) {
     if (!supabase || !userId) throw new Error('Sign in with your Abhyas account to save conversations.');
@@ -217,8 +237,10 @@ export function AITutor() {
       setLectureMaterials(materials);
       setLectureError(videoUrl ? 'Gemini analyzed the public video directly. Captions were not retrieved.' : 'Analysis is based on the transcript you provided.');
       if (supabase && userId) {
-        const { error: saveError } = await supabase.from('ai_lecture_sessions').insert({ user_id: userId, video_id: targetVideoId, video_url: `https://www.youtube.com/watch?v=${targetVideoId}`, transcript: lectureTranscript, materials });
+        const { data: savedSession, error: saveError } = await supabase.from('ai_lecture_sessions').insert({ user_id: userId, video_id: targetVideoId, video_url: `https://www.youtube.com/watch?v=${targetVideoId}`, transcript: lectureTranscript, materials }).select('id').single();
         if (saveError) throw new Error('Lecture analyzed, but it could not be saved. Apply the AI learning database migration and try again.');
+        try { await recordLearningEvent({ event_type:'lecture_analyzed', title:'Analyzed YouTube lecture', detail:lectureTranscript ? 'Based on the supplied transcript' : 'Analyzed directly by Gemini', subject:null, duration_seconds:0, idempotency_key:`lecture:${savedSession.id}`, metadata:{ video_id:targetVideoId } }); }
+        catch { setLectureError('Lecture materials were saved, but progress could not be saved. Apply the learning progress and rooms migration.'); }
         await loadHistory();
       }
     } catch (cause) { setLectureError(cause instanceof SyntaxError ? 'The AI returned an unreadable lecture analysis. Please try again.' : getAssistantError(cause)); }
