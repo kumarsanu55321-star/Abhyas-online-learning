@@ -9,10 +9,13 @@ export type SyllabusVideo = {
   channel: string;
   duration: string;
   view_count: number | null;
+  description: string;
   relevant_topics: string[];
   coverage: {
-    status: 'estimated' | 'unavailable';
+    status: 'estimated' | 'metadata' | 'unavailable';
+    source: 'gemini_video' | 'metadata' | 'unavailable';
     percentage?: number;
+    relevance_score?: number | null;
     covered_topics: string[];
     partial_topics: string[];
     missing_topics: string[];
@@ -23,6 +26,8 @@ export type SyllabusAnalysis = {
   topic_coverage: TopicCoverage[];
   overall_coverage: number | null;
   videos: SyllabusVideo[];
+  candidate_count: number;
+  evaluated_candidate_count?: number;
   video_error?: string;
   coverage_note?: string;
 };
