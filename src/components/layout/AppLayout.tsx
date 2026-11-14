@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useState } from 'react';
 import { BookOpen, Brain, ChevronDown, Home, History, Menu, Search, Settings, Trophy, UserRound, UsersRound, X, Bell, LogOut, Sparkles, Mic2, Compass } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-const primary = [{ to: '/dashboard', label: 'Dashboard', icon: Home }, { to: '/ai-tutor', label: 'AI Learning Assistant', icon: Brain }, { to: '/study-together', label: 'Study Together', icon: UsersRound }, { to: '/syllabus-navigator', label: 'Syllabus Navigator', icon: Compass }, { to: '/reverse-lecture', label: 'Reverse Lecture', icon: Mic2 }, { to: '/leaderboard', label: 'Leaderboard', icon: Trophy }];
+const primary = [{ to: '/dashboard', label: 'Dashboard', icon: Home }, { to: '/ai-tutor', label: 'AI Learning Assistant', icon: Brain }, { to: '/study-together', label: 'Study Together', icon: UsersRound }, { to: '/friends', label: 'Friends', icon: UserRound }, { to: '/syllabus-navigator', label: 'Syllabus Navigator', icon: Compass }, { to: '/reverse-lecture', label: 'Reverse Lecture', icon: Mic2 }, { to: '/leaderboard', label: 'Leaderboard', icon: Trophy }];
 const secondary = [{ to: '/history', label: 'Learning History', icon: History }, { to: '/profile', label: 'My Profile', icon: UserRound }, { to: '/settings', label: 'Settings', icon: Settings }];
 export default function AppLayout() {
   const [mobileOpen, setMobileOpen] = useState(false); const [profileOpen, setProfileOpen] = useState(false); const [notice, setNotice] = useState(false); const { signOut } = useAuth(); const navigate = useNavigate();
