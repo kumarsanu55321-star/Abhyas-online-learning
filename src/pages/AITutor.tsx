@@ -14,7 +14,7 @@ type QuizQuestion = { question: string; options: string[]; answer: number; expla
 type LectureMaterials = { summary: string; topics: { name: string; timestamp?: string }[]; notes: string; flashcards: { question: string; answer: string }[]; quiz: { questions: QuizQuestion[] } };
 type LectureSession = { id: string; video_id: string; video_url: string; transcript: string; materials: LectureMaterials; created_at: string };
 
-function YouTubePlayerFrame({ videoId }: { videoId: string }) {
+export function YouTubePlayerFrame({ videoId, onEnded }: { videoId: string; onEnded?: () => void }) {
   const element = useRef<HTMLIFrameElement>(null);
   const player = useRef<YouTubePlayer | null>(null);
   const [error, setError] = useState<{ message: string; watch: boolean } | null>(null);
@@ -26,6 +26,7 @@ function YouTubePlayerFrame({ videoId }: { videoId: string }) {
         player.current = new window.YT.Player(element.current, {
           events: {
             onReady: event => { event.target.getIframe().referrerPolicy = 'strict-origin-when-cross-origin'; },
+            onStateChange: event => { if (event.data === 0) onEnded?.(); },
             onError: event => {
               const message = event.data === 101 || event.data === 150
                 ? 'The video owner has disabled embedded playback.'

@@ -1,7 +1,8 @@
 export type YouTubePlayer = { destroy: () => void };
 type PlayerError = { data: number };
+type PlayerStateChange = { data: number };
 type PlayerReady = { target: YouTubePlayer & { getIframe: () => HTMLIFrameElement } };
-type PlayerConstructor = new (element: HTMLElement, options: { videoId?: string; events?: { onReady?: (event: PlayerReady) => void; onError?: (event: PlayerError) => void } }) => YouTubePlayer;
+type PlayerConstructor = new (element: HTMLElement, options: { videoId?: string; events?: { onReady?: (event: PlayerReady) => void; onError?: (event: PlayerError) => void; onStateChange?: (event: PlayerStateChange) => void } }) => YouTubePlayer;
 
 declare global {
   interface Window {

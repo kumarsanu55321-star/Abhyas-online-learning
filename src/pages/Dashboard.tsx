@@ -26,7 +26,7 @@ export default function Dashboard() {
       const snapshot = await loadProgress(user.id);
       setProfile(snapshot.profile); setEvents(snapshot.events); setError('');
       setLeaderboard(await getLeaderboard('weekly'));
-    } catch (cause) { setError(cause instanceof Error ? `${cause.message}. Apply the learning progress and rooms migration in Supabase.` : 'Could not load your learning progress.'); }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not load your learning progress.'); }
   }
   useEffect(() => { void refresh(); }, [user?.id]);
   useEffect(() => {
@@ -67,7 +67,7 @@ export default function Dashboard() {
   const greeting = profile?.display_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Learner';
   return <div className="dashboard-page">
     <section className="welcome-banner"><div className="welcome-text"><div className="eyebrow"><CalendarDays size={14}/> {new Date().toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric', year:'numeric' })} <span className="eyebrow-spark">✦</span> YOUR DAY, YOUR PACE</div><h1>Hey, {greeting.split(' ')[0]}! <span className="wave">👋</span></h1><p>Ready to level up your learning today?</p><div className="welcome-tags"><span><Flame size={15}/> {profile?.current_streak || 0} day streak</span><span><Zap size={15}/> {500 - xpInLevel} XP to next level</span></div></div><div className="welcome-illustration"><div className="welcome-sun"/><div className="welcome-plant plant-left">🌱</div><div className="welcome-person">🧑‍🎓</div><div className="welcome-plant plant-right">📚</div><div className="welcome-float float-star">✦</div><div className="welcome-float float-idea">💡</div><div className="welcome-floor"/></div><div className="welcome-confetti confetti-a">✦</div><div className="welcome-confetti confetti-b">✧</div></section>
-    {error && <div className="form-error" role="alert">{error}</div>}
+    {error && <div className="dashboard-error-notice" role="alert"><strong>Learning data could not be loaded.</strong><span>{error}</span></div>}
     {preview && <div className="form-info">Preview mode does not save learning data. Sign in to track progress.</div>}
     <section className="stats-grid"><Stat title="Total XP" value={totalXp.toLocaleString()} detail={`+${weekXp.toLocaleString()} this week`} icon={<Zap size={19}/>} color="gold" progress={xpInLevel / 5} progressText={`${xpInLevel} / 500 XP`}/><Stat title="Learning streak" value={`${profile?.current_streak || 0} days`} detail={`Best: ${profile?.best_streak || 0} days`} icon={<Flame size={20}/>} color="coral"/><Stat title="Current level" value={`Level ${level}`} detail={`${500 - xpInLevel} XP to next level`} icon={<Star size={19}/>} color="purple" progress={xpInLevel / 5} progressText={`${xpInLevel} / 500 XP`}/><Stat title="Topics explored" value={`${topicCount} topics`} detail={`${currentEvents.length} activities today`} icon={<Target size={20}/>} color="mint"/></section>
     <div className="dashboard-columns"><div className="dashboard-main-col">

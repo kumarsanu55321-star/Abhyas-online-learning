@@ -92,12 +92,14 @@ SYSTEM_PROMPTS = {
     'quiz': 'Create 5 interactive practice MCQs from the supplied conversation or lesson. Return only JSON: {"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}. answer is a zero-based option index. Ensure exactly one correct option. Do not add facts absent from the source.',
     'lecture': 'Analyze only the supplied transcript. Return JSON: {"summary":"...","topics":[{"name":"...","timestamp":"..."}],"notes":"...","flashcards":[{"question":"...","answer":"..."}],"quiz":{"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}}. Include a topic timestamp only when that exact time appears in the transcript. Do not infer facts from the title, URL, or outside knowledge. If the transcript is insufficient, say so.',
     'lecture_video': 'Analyze the actual supplied YouTube video input, including its audio and visuals. Do not infer video content from its title or URL. Return JSON: {"summary":"...","topics":[{"name":"...","timestamp":"..."}],"notes":"...","flashcards":[{"question":"...","answer":"..."}],"quiz":{"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}}. Include timestamps only for moments you can locate in the video; omit them when uncertain. Base every item on the video content. If you cannot access or understand the video, clearly say so instead of guessing.',
+    'recap_video': 'Create a concise recap designed to take about 60 seconds to read. Analyze the actual supplied YouTube video, including its audio and visuals. Do not infer content from its title, URL, thumbnail, or outside facts. Return only JSON: {"main_concepts":["..."],"definitions":[{"term":"...","definition":"..."}],"key_takeaways":["..."],"example":"One clearly labeled illustrative example grounded in the video concepts, not claimed to be spoken in the lecture; explain if no grounded example is possible.","revision_checklist":["..."]}. Include only details supported by video content. If you cannot access or understand enough of the video, return empty arrays and explain the limitation in key_takeaways rather than guessing.',
     'reverse_lecture': 'Evaluate the student\'s explanation of the stated topic. Be encouraging and precise. Judge conceptual correctness, identify specific strengths and gaps, explain corrections, and give 2-3 concrete next steps. Do not claim the student said things they did not say. Return only JSON: {"score":0,"feedback":"...","strengths":["..."],"gaps":["..."],"next_steps":["..."],"follow_up_question":"..."}. Score 0-100 based on accuracy and completeness; do not reward length.',
+    'recap': 'Create a quick recap designed to take about 60 seconds to read (roughly 110-140 words). Use only the supplied transcript or lecture notes. Do not use the video title, URL, or outside facts, and do not imply details were spoken unless the source supports them. Return only JSON: {"main_concepts":["..."],"definitions":[{"term":"...","definition":"..."}],"key_takeaways":["..."],"example":"One clearly labeled illustrative real-world example derived from the supplied concepts; do not claim it was in the lecture. If the source is too limited to ground an example, say that.","revision_checklist":["..."]}. If the source is empty or does not contain enough lecture content, return concise empty arrays and explain the limitation in key_takeaways instead of guessing.',
     'syllabus': 'Extract the syllabus into a logical learning path. Return only JSON in this shape: {"topics":[{"name":"...","subtopics":["..."]}]}. Keep the order pedagogically useful. Preserve every supplied syllabus line as a top-level topic in the same wording; add supporting subtopics only when useful. Do not replace syllabus topics with broader headings or invent unrelated content.',
 }
 
 
-def generate_gemini_video(model: str, key: str, video_url: str):
+def generate_gemini_video(model: str, key: str, video_url: str, mode: str = 'lecture'):
     try:
         from urllib.parse import urlparse, parse_qs
         parsed = urlparse(video_url)
@@ -109,13 +111,14 @@ def generate_gemini_video(model: str, key: str, video_url: str):
         raise HTTPException(status_code=400, detail='Enter a valid YouTube video URL.') from None
 
     canonical_url = f'https://www.youtube.com/watch?v={video_id}'
+    is_recap = mode == 'recap'
     payload = {
         'model': model,
         'input': [
             {'type': 'video', 'uri': canonical_url},
-            {'type': 'text', 'text': 'Analyze this lecture and create its summary, key topics, revision notes, flashcards, and practice MCQs. Include timestamps for topics only when you can ground them in the video.'},
+            {'type': 'text', 'text': 'Create a 60-second recap of this lecture from its actual video content.' if is_recap else 'Analyze this lecture and create its summary, key topics, revision notes, flashcards, and practice MCQs. Include timestamps for topics only when you can ground them in the video.'},
         ],
-        'system_instruction': SYSTEM_PROMPTS['lecture_video'],
+        'system_instruction': SYSTEM_PROMPTS['recap_video' if is_recap else 'lecture_video'],
         'response_format': {'type': 'text', 'mime_type': 'application/json'},
     }
     try:
@@ -127,7 +130,7 @@ def generate_gemini_video(model: str, key: str, video_url: str):
         )
     except HTTPException as error:
         if error.status_code in (400, 404, 422):
-            raise HTTPException(status_code=422, detail='Gemini could not analyze this video. It may be private, unlisted, unavailable, or unsupported. Paste a transcript to analyze it manually.') from None
+            raise HTTPException(status_code=422, detail='Gemini could not analyze this video. It may be private, unavailable, or unsupported. Paste the actual transcript or lecture notes to generate a recap.') from None
         raise
     try:
         steps = result.get('steps', [])
@@ -138,7 +141,7 @@ def generate_gemini_video(model: str, key: str, video_url: str):
             raise ValueError
         return ''.join(text_parts)
     except (AttributeError, KeyError, TypeError, ValueError):
-        raise HTTPException(status_code=502, detail='Gemini did not return a video analysis. Paste the transcript to analyze it manually.') from None
+        raise HTTPException(status_code=502, detail='Gemini did not return a video analysis. Paste the actual transcript or lecture notes to continue.') from None
 
 
 def generate(messages: list[dict], mode: str, transcript: str | None):
@@ -163,7 +166,7 @@ def generate(messages: list[dict], mode: str, transcript: str | None):
         payload = {
             'systemInstruction': {'parts': [{'text': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}]},
             'contents': contents,
-            'generationConfig': {'responseMimeType': 'application/json'} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'syllabus') else {},
+            'generationConfig': {'responseMimeType': 'application/json'} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'recap', 'syllabus') else {},
         }
         result = _request(
             f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
@@ -183,7 +186,7 @@ def generate(messages: list[dict], mode: str, transcript: str | None):
         source_messages = ([{'role': item['role'], 'content': item['content'][-3000:]} for item in messages[-8:]] if mode == 'chat' else [{'role': 'user', 'content': (transcript or '\n'.join(item['content'] for item in messages))[-24000:]}])
         result = _request(
             'https://api.groq.com/openai/v1/chat/completions',
-            {'model': model, 'messages': [{'role': 'system', 'content': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}, *source_messages], 'temperature': 0.4, **({'response_format': {'type': 'json_object'}} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'syllabus') else {})},
+            {'model': model, 'messages': [{'role': 'system', 'content': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}, *source_messages], 'temperature': 0.4, **({'response_format': {'type': 'json_object'}} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'recap', 'syllabus') else {})},
             {'Content-Type': 'application/json', 'Authorization': f'Bearer {key}'},
         )
         try:
@@ -202,15 +205,17 @@ def health():
 def assistant(request: AssistantRequest, _user=Depends(current_user)):
     if request.mode not in SYSTEM_PROMPTS:
         raise HTTPException(status_code=400, detail='Unknown assistant action.')
-    if request.mode == 'lecture' and request.video_url:
+    if request.mode in ('lecture', 'recap') and request.video_url:
         if os.getenv('AI_PROVIDER', 'gemini').lower() not in ('', 'gemini'):
             raise HTTPException(status_code=503, detail='Direct YouTube video analysis requires AI_PROVIDER=gemini. You can paste the transcript to use the configured provider.')
         key = os.getenv('GEMINI_API_KEY')
         if not key:
             raise HTTPException(status_code=503, detail='Direct YouTube video analysis requires GEMINI_API_KEY in backend/.env. You can paste the transcript to continue.')
-        return {'content': generate_gemini_video(os.getenv('GEMINI_MODEL', 'gemini-3.6-flash'), key, request.video_url), 'source': 'gemini_video'}
+        return {'content': generate_gemini_video(os.getenv('GEMINI_MODEL', 'gemini-3.6-flash'), key, request.video_url, request.mode), 'source': 'gemini_video'}
     if request.mode == 'lecture' and not (request.transcript or '').strip():
         raise HTTPException(status_code=400, detail='Paste a lecture transcript or provide a public YouTube URL. No video content has been analyzed yet.')
+    if request.mode == 'recap' and not (request.transcript or '').strip():
+        raise HTTPException(status_code=400, detail='Paste the actual lecture transcript or notes before generating a recap. The video title and URL are not enough to analyze lecture content.')
     messages = [{'role': item.role, 'content': item.content} for item in request.messages]
     return {'content': generate(messages, request.mode, request.transcript)}
 
