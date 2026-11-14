@@ -1,7 +1,7 @@
 import { supabase } from './supabase';
 
 export type AssistantMessage = { role: 'user' | 'assistant'; content: string };
-export type AssistantMode = 'chat' | 'summary' | 'notes' | 'flashcards' | 'quiz' | 'lecture';
+export type AssistantMode = 'chat' | 'summary' | 'notes' | 'flashcards' | 'quiz' | 'lecture' | 'reverse_lecture';
 
 const apiUrl = ((import.meta.env.VITE_AI_API_URL as string | undefined) || 'http://127.0.0.1:8000').replace(/\/+$/, '');
 

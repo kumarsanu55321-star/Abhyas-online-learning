@@ -1,6 +1,6 @@
 import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from 'react';
 export function Button({ children, className = '', variant = 'primary', ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'ghost' }) { return <button className={`button button-${variant} ${className}`} {...props}>{children}</button>; }
-export function Card({ children, className = '' }: { children: ReactNode; className?: string }) { return <section className={`card ${className}`}>{children}</section>; }
+export function Card({ children, className = '', id }: { children: ReactNode; className?: string; id?: string }) { return <section id={id} className={`card ${className}`}>{children}</section>; }
 export function ProgressBar({ value, color = 'purple' }: { value: number; color?: string }) { return <div className="progress-track" role="progressbar" aria-valuenow={Math.round(value)} aria-valuemin={0} aria-valuemax={100}><span className={`progress-fill ${color}`} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} /></div>; }
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) { return <input className="field" {...props} />; }
 export function PageHeader({ eyebrow, title, description, action }: { eyebrow?: string; title: string; description?: string; action?: ReactNode }) { return <div className="page-header"><div>{eyebrow && <div className="eyebrow">{eyebrow}</div>}<h1>{title}</h1>{description && <p>{description}</p>}</div>{action}</div>; }

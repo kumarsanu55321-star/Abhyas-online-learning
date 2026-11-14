@@ -1,7 +1,9 @@
 import json
+import math
 import os
 from pathlib import Path
 import re
+from functools import lru_cache
 from typing import Literal
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -90,6 +92,7 @@ SYSTEM_PROMPTS = {
     'quiz': 'Create 5 interactive practice MCQs from the supplied conversation or lesson. Return only JSON: {"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}. answer is a zero-based option index. Ensure exactly one correct option. Do not add facts absent from the source.',
     'lecture': 'Analyze only the supplied transcript. Return JSON: {"summary":"...","topics":[{"name":"...","timestamp":"..."}],"notes":"...","flashcards":[{"question":"...","answer":"..."}],"quiz":{"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}}. Include a topic timestamp only when that exact time appears in the transcript. Do not infer facts from the title, URL, or outside knowledge. If the transcript is insufficient, say so.',
     'lecture_video': 'Analyze the actual supplied YouTube video input, including its audio and visuals. Do not infer video content from its title or URL. Return JSON: {"summary":"...","topics":[{"name":"...","timestamp":"..."}],"notes":"...","flashcards":[{"question":"...","answer":"..."}],"quiz":{"questions":[{"question":"...","options":["...","...","...","..."],"answer":0,"explanation":"..."}]}}. Include timestamps only for moments you can locate in the video; omit them when uncertain. Base every item on the video content. If you cannot access or understand the video, clearly say so instead of guessing.',
+    'reverse_lecture': 'Evaluate the student\'s explanation of the stated topic. Be encouraging and precise. Judge conceptual correctness, identify specific strengths and gaps, explain corrections, and give 2-3 concrete next steps. Do not claim the student said things they did not say. Return only JSON: {"score":0,"feedback":"...","strengths":["..."],"gaps":["..."],"next_steps":["..."],"follow_up_question":"..."}. Score 0-100 based on accuracy and completeness; do not reward length.',
     'syllabus': 'Extract the syllabus into a logical learning path. Return only JSON in this shape: {"topics":[{"name":"...","subtopics":["..."]}]}. Keep the order pedagogically useful. Preserve every supplied syllabus line as a top-level topic in the same wording; add supporting subtopics only when useful. Do not replace syllabus topics with broader headings or invent unrelated content.',
 }
 
@@ -151,11 +154,16 @@ def generate(messages: list[dict], mode: str, transcript: str | None):
         if mode != 'chat':
             source = transcript if mode == 'lecture' else '\n'.join(f"{item['role']}: {item['content']}" for item in messages)
             prompt = f'{source}\n\nTask: {messages[-1]["content"]}' if mode == 'lecture' else source
-        contents = [{'role': 'model' if item['role'] == 'assistant' else 'user', 'parts': [{'text': item['content']}]} for item in (messages if mode == 'chat' else [{'role': 'user', 'content': prompt}])]
+        if mode == 'chat':
+            # Keep recent conversational context while bounding per-request tokens and provider cost.
+            recent_messages = messages[-8:]
+            contents = [{'role': 'model' if item['role'] == 'assistant' else 'user', 'parts': [{'text': item['content'][-3000:]}]} for item in recent_messages]
+        else:
+            contents = [{'role': 'user', 'parts': [{'text': prompt[-24000:]}]}]
         payload = {
             'systemInstruction': {'parts': [{'text': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}]},
             'contents': contents,
-            'generationConfig': {'responseMimeType': 'application/json'} if mode in ('flashcards', 'quiz', 'lecture', 'syllabus') else {},
+            'generationConfig': {'responseMimeType': 'application/json'} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'syllabus') else {},
         }
         result = _request(
             f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent',
@@ -172,10 +180,10 @@ def generate(messages: list[dict], mode: str, transcript: str | None):
         if not key:
             raise HTTPException(status_code=503, detail='Add GROQ_API_KEY to backend/.env (or set AI_PROVIDER=gemini and add GEMINI_API_KEY).')
         model = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')
-        source_messages = messages if mode == 'chat' else [{'role': 'user', 'content': transcript or '\n'.join(item['content'] for item in messages)}]
+        source_messages = ([{'role': item['role'], 'content': item['content'][-3000:]} for item in messages[-8:]] if mode == 'chat' else [{'role': 'user', 'content': (transcript or '\n'.join(item['content'] for item in messages))[-24000:]}])
         result = _request(
             'https://api.groq.com/openai/v1/chat/completions',
-            {'model': model, 'messages': [{'role': 'system', 'content': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}, *source_messages], 'temperature': 0.4, **({'response_format': {'type': 'json_object'}} if mode in ('flashcards', 'quiz', 'lecture', 'syllabus') else {})},
+            {'model': model, 'messages': [{'role': 'system', 'content': SYSTEM_PROMPTS[mode] + (f' Use this lecture transcript as the active lesson context:\n{transcript}' if transcript and mode != 'lecture' else '')}, *source_messages], 'temperature': 0.4, **({'response_format': {'type': 'json_object'}} if mode in ('flashcards', 'quiz', 'lecture', 'reverse_lecture', 'syllabus') else {})},
             {'Content-Type': 'application/json', 'Authorization': f'Bearer {key}'},
         )
         try:
@@ -232,13 +240,44 @@ def _video_duration(value: str) -> str:
     return f'{hours}:{minutes:02}:{seconds:02}' if hours else f'{minutes}:{seconds:02}'
 
 
+def _flatten_syllabus_topics(topics: list[dict]) -> list[str]:
+    concepts = []
+    for topic in topics:
+        for value in [topic.get('name', ''), *(topic.get('subtopics') or [])]:
+            name = str(value).strip()
+            if name and name.casefold() not in {concept.casefold() for concept in concepts}:
+                concepts.append(name)
+    return concepts
+
+
+@lru_cache(maxsize=64)
+def _youtube_search_query(query: str, max_results: int):
+    return _youtube_api_get('search', {
+        'part': 'snippet', 'type': 'video', 'videoEmbeddable': 'true',
+        'q': query, 'maxResults': str(max_results), 'order': 'relevance',
+    })
+
+
+@lru_cache(maxsize=64)
+def _youtube_video_details(video_ids: tuple[str, ...]):
+    return _youtube_api_get('videos', {'part': 'snippet,contentDetails,statistics', 'id': ','.join(video_ids)})
+
+
 def _search_syllabus_videos(subject: str, topics: list[dict]) -> list[dict]:
     found: dict[str, dict] = {}
-    for topic in topics[:10]:
-        result = _youtube_api_get('search', {
-            'part': 'snippet', 'type': 'video', 'videoEmbeddable': 'true',
-            'q': f'{subject} {topic["name"]} tutorial lecture', 'maxResults': '1', 'order': 'relevance',
-        })
+    concepts = _flatten_syllabus_topics(topics)[:10]
+    if not concepts:
+        return []
+    search_terms = []
+    for topic in topics:
+        root = str(topic.get('name', '')).strip()
+        if root:
+            search_terms.append((root, root))
+            search_terms.extend((f'{root} {subtopic}', subtopic) for subtopic in topic.get('subtopics', []) if str(subtopic).strip())
+    search_terms = search_terms[:10]
+    per_query = max(1, min(10, (12 + len(search_terms) - 1) // len(search_terms)))
+    for query, concept in search_terms:
+        result = _youtube_search_query(f'{subject} {query} tutorial lecture', per_query)
         for item in result.get('items', []):
             video_id = (item.get('id') or {}).get('videoId')
             snippet = item.get('snippet') or {}
@@ -249,42 +288,74 @@ def _search_syllabus_videos(subject: str, topics: list[dict]) -> list[dict]:
                 'title': snippet.get('title', ''),
                 'thumbnail': (snippet.get('thumbnails') or {}).get('high', {}).get('url') or (snippet.get('thumbnails') or {}).get('medium', {}).get('url') or (snippet.get('thumbnails') or {}).get('default', {}).get('url', ''),
                 'channel': snippet.get('channelTitle', ''),
+                'description': snippet.get('description', '')[:2000],
                 'duration': '',
                 'view_count': None,
                 'relevant_topics': [],
             })
-            if topic['name'] not in video['relevant_topics']:
-                video['relevant_topics'].append(topic['name'])
-        if len(found) >= 10:
+            if concept not in video['relevant_topics']:
+                video['relevant_topics'].append(concept)
+        if len(found) >= 20:
             break
 
     if not found:
         return []
-    ids = list(found)[:10]
-    details = _youtube_api_get('videos', {'part': 'contentDetails,statistics', 'id': ','.join(ids)})
+    ids = tuple(list(found)[:20])
+    details = _youtube_video_details(ids)
+    available_ids = set()
     for item in details.get('items', []):
         video = found.get(item.get('id'))
         if not video:
             continue
+        available_ids.add(item['id'])
+        snippet = item.get('snippet') or {}
+        video['title'] = snippet.get('title', video['title'])
+        video['channel'] = snippet.get('channelTitle', video['channel'])
+        video['description'] = snippet.get('description', video['description'])[:2000]
+        thumbs = snippet.get('thumbnails') or {}
+        video['thumbnail'] = thumbs.get('high', {}).get('url') or thumbs.get('medium', {}).get('url') or thumbs.get('default', {}).get('url') or video['thumbnail']
         video['duration'] = _video_duration((item.get('contentDetails') or {}).get('duration', ''))
         views = (item.get('statistics') or {}).get('viewCount')
         video['view_count'] = int(views) if views is not None else None
-    return [found[video_id] for video_id in ids]
+    return [found[video_id] for video_id in ids if video_id in available_ids]
 
 
-def _analyze_syllabus_video_coverage(subject: str, topics: list[dict], videos: list[dict]) -> dict[str, dict[str, str]]:
+def _metadata_relevance(video: dict, concepts: list[str], main_topics: list[str]) -> int:
+    title = str(video.get('title', '')).casefold()
+    description = str(video.get('description', '')).casefold()
+    if not concepts or not (title or description):
+        return 0
+
+    def match_score(text: str, concept: str) -> float:
+        if concept.casefold() in text:
+            return 1.0
+        terms = [term for term in re.findall(r'[a-z0-9]+', concept.casefold()) if len(term) > 2]
+        return sum(term in text for term in terms) / len(terms) if terms else 0.0
+
+    scores = [0.7 * match_score(title, concept) + 0.3 * match_score(description, concept) for concept in concepts]
+    root_scores = [0.7 * match_score(title, topic) + 0.3 * match_score(description, topic) for topic in main_topics]
+    concept_relevance = sum(scores) / len(scores)
+    main_topic_relevance = max(root_scores, default=0.0)
+    return round((0.6 * concept_relevance + 0.4 * main_topic_relevance) * 100)
+
+
+def _analyze_syllabus_video_batch(subject: str, concepts: list[str], videos: list[dict]) -> dict[str, dict]:
     key = os.getenv('GEMINI_API_KEY')
     if not key or not videos:
         return {}
     model = os.getenv('GEMINI_MODEL', 'gemini-3.6-flash')
-    input_items = [{'type': 'video', 'uri': f'https://www.youtube.com/watch?v={video["video_id"]}'} for video in videos]
     video_ids = [video['video_id'] for video in videos]
+    input_items = [{'type': 'video', 'uri': f'https://www.youtube.com/watch?v={video_id}'} for video_id in video_ids]
+    metadata = [
+        {'video_id': video['video_id'], 'title': video.get('title', ''), 'description': video.get('description', '')[:800]}
+        for video in videos
+    ]
     input_items.append({'type': 'text', 'text': (
-        f'Subject: {subject}. Syllabus topics: {json.dumps([topic["name"] for topic in topics])}. '
-        f'The video inputs are in this exact order and have these IDs: {json.dumps(video_ids)}. Return each matching ID exactly from this list. '
-        'For every supplied video, compare its actual audio and visual content (not title or metadata) to every syllabus topic. '
-        'Return only JSON: {"videos":[{"video_id":"...","topics":[{"name":"exact syllabus topic name","status":"covered|partial|missing|unavailable"}]}]}. '
-        'Use covered only when substantially taught, partial when only some relevant material is taught, missing only when the video is accessible and does not address it, and unavailable when the video content cannot be assessed. Include every exact syllabus topic for every video. Do not guess.'
+        f'Subject: {subject}. Concepts: {json.dumps(concepts)}. '
+        f'Video inputs in order with IDs: {json.dumps(video_ids)}. Metadata for matching IDs: {json.dumps(metadata)}. '
+        'For each video evaluate the actual video content, not its title, for every concept. Also score conceptual relevance and educational usefulness from 0 to 100. '
+        'If the video content is inaccessible, set video_status to unavailable and give only a metadata_relevance_score from the supplied title/description; mark all topic statuses unavailable. '
+        'Return JSON: {"videos":[{"video_id":"exact ID","video_status":"analyzed|unavailable","relevance_score":0,"educational_usefulness":0,"metadata_relevance_score":0,"topics":[{"name":"exact concept","status":"covered|partial|missing|unavailable"}]}]}. Include every exact concept for every video. Do not claim transcript access; assess only actual video content you can inspect and never infer coverage from metadata.'
     )})
     try:
         result = _request(
@@ -292,34 +363,131 @@ def _analyze_syllabus_video_coverage(subject: str, topics: list[dict], videos: l
             {
                 'model': model,
                 'input': input_items,
-                'system_instruction': 'Evaluate only the actual supplied video content. Titles and metadata are not evidence of topic coverage. When uncertain or unable to inspect a video, report unavailable.',
+                'system_instruction': 'Use actual video content as the sole evidence for covered, partial, or missing topics. If content cannot be inspected, return unavailable for content coverage and a separately labeled metadata relevance estimate.',
                 'response_format': {'type': 'text', 'mime_type': 'application/json'},
             },
             {'Content-Type': 'application/json', 'x-goog-api-key': key, 'Api-Revision': '2026-05-20'},
-            timeout=240,
+            timeout=180,
         )
         parts = [part['text'] for step in result.get('steps', []) if step.get('type') == 'model_output' for part in step.get('content', []) if part.get('type') == 'text' and part.get('text')]
         if not parts:
             parts = [item['text'] for item in result.get('outputs', []) if item.get('type') == 'text' and item.get('text')]
         parsed = json.loads(''.join(parts))
         reports = parsed if isinstance(parsed, list) else parsed.get('videos', [])
-        valid_names = {topic['name'].lower(): topic['name'] for topic in topics}
+        valid_names = {name.casefold(): name for name in concepts}
         coverage = {}
         for report in reports:
             video_id = report.get('video_id')
-            if video_id not in {video['video_id'] for video in videos}:
+            if video_id not in video_ids:
                 continue
-            coverage[video_id] = {}
+            topic_statuses = {}
             for topic_report in report.get('topics', []):
-                canonical_name = valid_names.get(str(topic_report.get('name', '')).lower())
+                canonical_name = valid_names.get(str(topic_report.get('name', '')).casefold())
                 status = topic_report.get('status')
                 if canonical_name and status in {'covered', 'partial', 'missing', 'unavailable'}:
-                    coverage[video_id][canonical_name] = status
+                    topic_statuses[canonical_name] = status
+            complete = len(topic_statuses) == len(concepts) and all(status in {'covered', 'partial', 'missing'} for status in topic_statuses.values())
+            coverage[video_id] = {
+                'content_available': report.get('video_status') != 'unavailable' and complete,
+                'topics': topic_statuses,
+                'relevance_score': report.get('relevance_score'),
+                'educational_usefulness': report.get('educational_usefulness'),
+                'metadata_relevance_score': report.get('metadata_relevance_score'),
+            }
         return coverage
     except (HTTPException, KeyError, TypeError, ValueError):
         return {}
 
 
+def _analyze_syllabus_video_coverage(subject: str, concepts: list[str], videos: list[dict]) -> dict[str, dict]:
+    coverage = {}
+    batch_size = 2
+    # Search can return up to 20 items; spend Gemini video requests on the six strongest metadata matches.
+    shortlist = sorted(videos, key=lambda video: _metadata_relevance(video, concepts, [item for item in concepts[:4]]), reverse=True)[:6]
+    for offset in range(0, len(shortlist), batch_size):
+        batch = shortlist[offset:offset + batch_size]
+        results = _analyze_syllabus_video_batch(subject, concepts, batch)
+        if not results:
+            break
+        coverage.update(results)
+    return coverage
+
+
+def _recommend_syllabus_videos(videos: list[dict], topics: list[dict], analysis: dict[str, dict]) -> list[dict]:
+    concepts = _flatten_syllabus_topics(topics)
+    main_topics = [str(topic['name']) for topic in topics if topic.get('name')]
+    candidates = []
+    for video in videos:
+        result = analysis.get(video['video_id'], {})
+        statuses = result.get('topics', {}) if result.get('content_available') else {}
+        content_available = bool(result.get('content_available'))
+        metadata_score = _metadata_relevance(video, concepts, main_topics)
+        if not content_available and isinstance(result.get('metadata_relevance_score'), (int, float)):
+            metadata_score = max(0, min(100, round(result['metadata_relevance_score'])))
+        covered = [name for name in concepts if statuses.get(name) == 'covered']
+        partial = [name for name in concepts if statuses.get(name) == 'partial']
+        missing = [name for name in concepts if statuses.get(name) == 'missing']
+        coverage_score = round((len(covered) + 0.5 * len(partial)) * 100 / len(concepts)) if content_available and concepts else None
+        if content_available:
+            relevance = result.get('relevance_score')
+            quality = result.get('educational_usefulness')
+            relevance = max(0, min(100, round(relevance))) if isinstance(relevance, (int, float)) else metadata_score
+            quality = max(0, min(100, round(quality))) if isinstance(quality, (int, float)) else relevance
+            relevance_source = 'gemini_video'
+            # Rank by marginal syllabus coverage (55%), relevance (30%), and teaching usefulness (15%).
+            rank_score = 0.55 * coverage_score + 0.3 * relevance + 0.15 * quality
+            status = 'estimated'
+        else:
+            relevance = metadata_score
+            quality = None
+            relevance_source = 'metadata' if relevance > 0 else 'unavailable'
+            popularity = min(100, 12 * math.log10(max(1, video.get('view_count') or 1)))
+            rank_score = 0.85 * relevance + 0.15 * popularity
+            coverage_score = None
+            status = 'metadata' if relevance_source == 'metadata' else 'unavailable'
+            covered, partial, missing = [], [], []
+        video['coverage'] = {
+            'status': status,
+            'source': relevance_source,
+            'percentage': coverage_score,
+            'relevance_score': relevance if relevance_source != 'unavailable' else None,
+            'covered_topics': covered,
+            'partial_topics': partial,
+            'missing_topics': missing,
+        }
+        video['_rank_score'] = rank_score
+        video['_quality_score'] = quality or 0
+        video['_content_statuses'] = statuses
+        candidates.append(video)
+
+    selected = []
+    contribution = {concept: 0.0 for concept in concepts}
+    pool = [video for video in candidates if video['coverage']['relevance_score'] is not None and video['coverage']['relevance_score'] >= 15]
+    while pool and len(selected) < 5:
+        def marginal_score(video):
+            if video['coverage']['source'] != 'gemini_video':
+                return 0.8 * video['_rank_score'] + 0.2 * min(100, len(video.get('relevant_topics', [])) * 20)
+            gain = sum(
+                # A covered concept contributes 1, a partial concept 0.5, and a missing concept 0.
+                max(0.0, (1.0 if video['_content_statuses'].get(concept) == 'covered' else 0.5 if video['_content_statuses'].get(concept) == 'partial' else 0.0) - contribution[concept])
+                for concept in concepts
+            ) * 100 / max(1, len(concepts))
+            return 0.55 * gain + 0.3 * video['coverage']['relevance_score'] + 0.15 * video['_quality_score']
+
+        best = max(pool, key=marginal_score)
+        if marginal_score(best) < 15:
+            break
+        pool.remove(best)
+        selected.append(best)
+        if best['coverage']['source'] == 'gemini_video':
+            for concept in concepts:
+                value = 1.0 if best['_content_statuses'].get(concept) == 'covered' else 0.5 if best['_content_statuses'].get(concept) == 'partial' else 0.0
+                contribution[concept] = max(contribution[concept], value)
+    for video in selected:
+        video.pop('_rank_score', None)
+        video.pop('_quality_score', None)
+        video.pop('_content_statuses', None)
+    return selected
 @app.post('/api/syllabus/analyze')
 def analyze_syllabus(request: SyllabusRequest, _user=Depends(current_user)):
     provider = os.getenv('AI_PROVIDER', '').lower() or ('gemini' if os.getenv('GEMINI_API_KEY') else 'groq')
@@ -339,33 +507,22 @@ def analyze_syllabus(request: SyllabusRequest, _user=Depends(current_user)):
             raise
         raise HTTPException(status_code=502, detail='Gemini could not extract syllabus topics. Add more detail and try again.') from None
 
-    topic_names = [topic['name'] for topic in topics]
-    unavailable = [{'topic': name, 'status': 'unavailable'} for name in topic_names]
+    concepts = _flatten_syllabus_topics(topics)
+    unavailable = [{'topic': name, 'status': 'unavailable'} for name in concepts]
     if not os.getenv('YOUTUBE_API_KEY'):
-        return {'topics': topics, 'topic_coverage': unavailable, 'overall_coverage': None, 'videos': [], 'video_error': 'Set YOUTUBE_API_KEY=YOUR_KEY in backend/.env to search YouTube.'}
+        return {'topics': topics, 'topic_coverage': unavailable, 'overall_coverage': None, 'videos': [], 'candidate_count': 0, 'video_error': 'Set YOUTUBE_API_KEY=YOUR_KEY in backend/.env to search YouTube.'}
     try:
-        videos = _search_syllabus_videos(request.subject.strip(), topics)
+        candidates = _search_syllabus_videos(request.subject.strip(), topics)
     except HTTPException as error:
-        return {'topics': topics, 'topic_coverage': unavailable, 'overall_coverage': None, 'videos': [], 'video_error': error.detail}
+        return {'topics': topics, 'topic_coverage': unavailable, 'overall_coverage': None, 'videos': [], 'candidate_count': 0, 'video_error': error.detail}
 
-    raw_coverage = _analyze_syllabus_video_coverage(request.subject.strip(), topics, videos)
-    for video in videos:
-        statuses = raw_coverage.get(video['video_id'], {})
-        complete = len(statuses) == len(topic_names) and all(status in {'covered', 'partial', 'missing'} for status in statuses.values())
-        covered = [name for name in topic_names if statuses.get(name) == 'covered']
-        partial = [name for name in topic_names if statuses.get(name) == 'partial']
-        missing = [name for name in topic_names if statuses.get(name) == 'missing']
-        video['coverage'] = {
-            'status': 'estimated' if complete else 'unavailable',
-            'percentage': round((len(covered) + 0.5 * len(partial)) * 100 / len(topic_names)) if complete else None,
-            'covered_topics': covered,
-            'partial_topics': partial,
-            'missing_topics': missing,
-        }
+    raw_coverage = _analyze_syllabus_video_coverage(request.subject.strip(), concepts, candidates)
+    videos = _recommend_syllabus_videos(candidates, topics, raw_coverage)
 
     topic_coverage = []
-    for name in topic_names:
-        evidence = [raw_coverage.get(video['video_id'], {}).get(name, 'unavailable') for video in videos]
+    content_videos = [raw_coverage.get(video['video_id'], {}) for video in videos if raw_coverage.get(video['video_id'], {}).get('content_available')]
+    for name in concepts:
+        evidence = [video.get('topics', {}).get(name, 'unavailable') for video in content_videos]
         if 'covered' in evidence:
             status = 'covered'
         elif 'partial' in evidence:
@@ -377,10 +534,20 @@ def analyze_syllabus(request: SyllabusRequest, _user=Depends(current_user)):
         topic_coverage.append({'topic': name, 'status': status})
     enough_evidence = bool(topic_coverage) and all(item['status'] != 'unavailable' for item in topic_coverage)
     overall_coverage = round(sum(1 if item['status'] == 'covered' else 0.5 if item['status'] == 'partial' else 0 for item in topic_coverage) * 100 / len(topic_coverage)) if enough_evidence else None
+    has_metadata = any(video['coverage']['source'] == 'metadata' for video in videos)
+    evaluated_candidate_count = sum(1 for result in raw_coverage.values() if result.get('content_available'))
+    if overall_coverage is not None:
+        coverage_note = 'Coverage score: covered=1, partial=0.5, missing=0 across syllabus concepts. Gemini estimates from public video content; not independently verified.'
+    elif evaluated_candidate_count < len(candidates):
+        coverage_note = 'Gemini could not assess all candidate videos. Content coverage is unavailable for those videos; metadata relevance estimates are labeled separately.'
+    else:
+        coverage_note = 'Coverage is unavailable when Gemini cannot assess the actual video content.'
     return {
         'topics': topics,
         'topic_coverage': topic_coverage,
         'overall_coverage': overall_coverage,
         'videos': videos,
-        'coverage_note': 'Gemini estimates coverage from public video content. It is not independently verified.' if overall_coverage is not None else 'Coverage unavailable when video content could not be assessed.',
+        'candidate_count': len(candidates),
+        'evaluated_candidate_count': evaluated_candidate_count,
+        'coverage_note': coverage_note + (' Metadata relevance is available for some candidates.' if has_metadata and overall_coverage is None else ''),
     }
