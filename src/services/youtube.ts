@@ -1,11 +1,45 @@
-export type YouTubePlayer = { destroy: () => void };
-type PlayerError = { data: number };
-type PlayerReady = { target: YouTubePlayer & { getIframe: () => HTMLIFrameElement } };
-type PlayerConstructor = new (element: HTMLElement, options: { videoId?: string; events?: { onReady?: (event: PlayerReady) => void; onError?: (event: PlayerError) => void } }) => YouTubePlayer;
+export type YouTubePlayer = {
+  destroy: () => void;
+  getIframe: () => HTMLIFrameElement;
+  getCurrentTime: () => number;
+  getDuration: () => number;
+  getPlayerState: () => number;
+  getVideoData: () => { title?: string; video_id?: string };
+  cueVideoById: (video: { videoId: string; startSeconds?: number }) => void;
+  loadVideoById: (video: { videoId: string; startSeconds?: number }) => void;
+  playVideo: () => void;
+  pauseVideo: () => void;
+  seekTo: (seconds: number, allowSeekAhead: boolean) => void;
+  mute: () => void;
+  unMute: () => void;
+};
+
+export type YouTubePlayerEvent = { target: YouTubePlayer };
+export type YouTubePlayerApi = {
+  PlayerState: {
+    UNSTARTED: -1;
+    ENDED: 0;
+    PLAYING: 1;
+    PAUSED: 2;
+    BUFFERING: 3;
+    CUED: 5;
+  };
+  Player: new (element: HTMLElement, options: {
+    width?: string | number;
+    height?: string | number;
+    videoId?: string;
+    playerVars?: Record<string, string | number>;
+    events?: {
+      onReady?: (event: YouTubePlayerEvent) => void;
+      onStateChange?: (event: YouTubePlayerEvent & { data: number }) => void;
+      onError?: (event: YouTubePlayerEvent & { data: number }) => void;
+    };
+  }) => YouTubePlayer;
+};
 
 declare global {
   interface Window {
-    YT?: { Player: PlayerConstructor };
+    YT?: YouTubePlayerApi;
     onYouTubeIframeAPIReady?: () => void;
   }
 }

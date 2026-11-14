@@ -6,7 +6,15 @@ import { supabase } from '../../services/supabase';
 import type { LearningEvent, LearnerProfile } from '../../services/progress';
 import { Link } from 'react-router-dom';
 
-const primary = [{ to: '/dashboard', label: 'Dashboard', icon: Home }, { to: '/ai-tutor', label: 'AI Learning Assistant', icon: Brain }, { to: '/study-together', label: 'Study Together', icon: UsersRound }, { to: '/syllabus-navigator', label: 'Syllabus Navigator', icon: Compass }, { to: '/reverse-lecture', label: 'Reverse Lecture', icon: Mic2 }, { to: '/leaderboard', label: 'Leaderboard', icon: Trophy }];
+const primary = [
+  { to: '/dashboard', label: 'Dashboard', icon: Home },
+  { to: '/ai-tutor', label: 'AI Learning Assistant', icon: Brain },
+  { to: '/study-together', label: 'Study Together', icon: UsersRound },
+  { to: '/friends', label: 'Friends', icon: UserRound },
+  { to: '/syllabus-navigator', label: 'Syllabus Navigator', icon: Compass },
+  { to: '/reverse-lecture', label: 'Reverse Lecture', icon: Mic2 },
+  { to: '/leaderboard', label: 'Leaderboard', icon: Trophy },
+];
 const secondary = [{ to: '/history', label: 'Learning History', icon: History }, { to: '/profile', label: 'My Profile', icon: UserRound }, { to: '/settings', label: 'Settings', icon: Settings }];
 export default function AppLayout() {
   const { session, signOut } = useAuth();
